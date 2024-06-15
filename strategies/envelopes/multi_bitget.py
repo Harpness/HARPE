@@ -1,491 +1,206 @@
-import datetime
-import sys
-
-sys.path.append("./Live-Tools-V2")
-
 import asyncio
-from utilities.bitget_perp import PerpBitget
-from secret import ACCOUNTS
-import ta
+import pandas as pd
+import numpy as np
+import os
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+import joblib
+import logging
+from datetime import datetime
+from bitget_perp import PerpBitget
 
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
+# Chemin des fichiers
+DATA_FILE = "trade_data.csv"
+MODEL_FILE = "trading_model.pkl"
 
-async def main():
-    account = ACCOUNTS["bitget1"]
+# Fonction pour enregistrer les données de trading
+def save_trade_data(trade_data, filename=DATA_FILE):
+    if os.path.exists(filename):
+        existing_data = pd.read_csv(filename)
+        updated_data = pd.concat([existing_data, trade_data])
+    else:
+        updated_data = trade_data
 
-    margin_mode = "isolated"  # isolated or crossed
-    exchange_leverage = 3
+    updated_data.to_csv(filename, index=False)
 
-    tf = "1h"
-    size_leverage = 3
-    sl = 0.3
-    params = {
-        "BTC/USDT": {
-            "src": "close",
-            "ma_base_window": 7,
-            "envelopes": [0.07, 0.1, 0.15],
-            "size": 0.1,
-            "sides": ["long", "short"],
-        },
-        "ETH/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15],
-            "size": 0.1,
-            "sides": ["long", "short"],
-        },
-        "ADA/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.09, 0.12, 0.15],
-            "size": 0.1,
-            "sides": ["long", "short"],
-        },
-        "AVAX/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.09, 0.12, 0.15],
-            "size": 0.1,
-            "sides": ["long", "short"],
-        },
-        "EGLD/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "KSM/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "OCEAN/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "REN/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "ACH/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "APE/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "CRV/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "DOGE/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "ENJ/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "FET/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "ICP/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "IMX/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "LDO/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "MAGIC/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "REEF/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "SAND/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "TRX/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-        "XTZ/USDT": {
-            "src": "close",
-            "ma_base_window": 5,
-            "envelopes": [0.07, 0.1, 0.15, 0.2],
-            "size": 0.05,
-            "sides": ["long", "short"],
-        },
-    }
+# Fonction pour calculer la volatilité
+def calculate_volatility(prices, window=20):
+    log_returns = np.log(prices / prices.shift(1))
+    volatility = log_returns.rolling(window=window).std()
+    return volatility
 
-    exchange = PerpBitget(
-        public_api=account["public_api"],
-        secret_api=account["secret_api"],
-        password=account["password"],
+# Fonction pour ajuster la taille des positions
+def adjust_position_size(base_size, volatility, target_volatility=0.02):
+    if volatility > 0:
+        return base_size * (target_volatility / volatility)
+    else:
+        return base_size
+
+# Fonction pour placer des ordres avec gestion des risques
+async def place_dynamic_order_with_risk_management(exchange, pair, side, price, usdt_balance, base_size, volatility, stop_loss_pct=0.02, take_profit_pct=0.04):
+    size = adjust_position_size(base_size, volatility)
+    size = exchange.amount_to_precision(pair, size / price)
+
+    # Place main order
+    main_order = await exchange.place_trigger_order(
+        pair=pair,
+        side=side,
+        price=exchange.price_to_precision(pair, price),
+        trigger_price=exchange.price_to_precision(pair, price * (1.005 if side == "buy" else 0.995)),
+        size=size,
+        type="limit",
+        reduce=False,
+        margin_mode="cross"
     )
-    invert_side = {"long": "sell", "short": "buy"}
-    print(
-        f"--- Execution started at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---"
+
+    # Calculate stop-loss and take-profit prices
+    stop_loss_price = price * (1 - stop_loss_pct) if side == "buy" else price * (1 + stop_loss_pct)
+    take_profit_price = price * (1 + take_profit_pct) if side == "buy" else price * (1 - take_profit_pct)
+
+    # Place stop-loss order
+    await exchange.place_trigger_order(
+        pair=pair,
+        side="sell" if side == "buy" else "buy",
+        price=exchange.price_to_precision(pair, stop_loss_price),
+        trigger_price=exchange.price_to_precision(pair, stop_loss_price),
+        size=size,
+        type="limit",
+        reduce=True,
+        margin_mode="cross"
     )
-    try:
-        await exchange.load_markets()
 
-        for pair in params.copy():
-            info = exchange.get_pair_info(pair)
-            if info is None:
-                print(f"Pair {pair} not found, removing from params...")
-                del params[pair]
+    # Place take-profit order
+    await exchange.place_trigger_order(
+        pair=pair,
+        side="sell" if side == "buy" else "buy",
+        price=exchange.price_to_precision(pair, take_profit_price),
+        trigger_price=exchange.price_to_precision(pair, take_profit_price),
+        size=size,
+        type="limit",
+        reduce=True,
+        margin_mode="cross"
+    )
 
-        pairs = list(params.keys())
+# Fonction pour charger et former le modèle
+def train_predictive_model(filename=DATA_FILE):
+    # Charger les données enregistrées
+    data = pd.read_csv(filename)
 
-        try:
-            print(
-                f"Setting {margin_mode} x{exchange_leverage} on {len(pairs)} pairs..."
-            )
-            tasks = [
-                exchange.set_margin_mode_and_leverage(
-                    pair, margin_mode, exchange_leverage
+    # Calculer les caractéristiques
+    data['log_return'] = np.log(data['price'] / data['price'].shift(1))
+    data['volatility'] = data['log_return'].rolling(window=20).std()
+
+    # Remplacer les valeurs manquantes
+    data = data.fillna(0)
+
+    # Sélectionner les caractéristiques et la cible
+    features = ['price', 'volume', 'volatility']
+    target = 'side'  # Par exemple, 1 pour 'buy', 0 pour 'sell'
+
+    X = data[features]
+    y = data[target]
+
+    # Diviser les données en ensembles d'entraînement et de test
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # Former le modèle
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+
+    # Évaluer le modèle
+    accuracy = model.score(X_test, y_test)
+    logger.info(f"Accuracy: {accuracy}")
+
+    # Sauvegarder le modèle
+    joblib.dump(model, MODEL_FILE)
+    return model
+
+# Fonction pour prédire l'action de trading
+def predict_trade_action(model, price, volume, volatility):
+    new_data = np.array([[price, volume, volatility]])
+    predicted_side = model.predict(new_data)
+    return predicted_side
+
+# Fonction principale de trading
+async def main_trading_logic(exchange, params):
+    # Vérifier si le modèle existe, sinon le former
+    if os.path.exists(MODEL_FILE):
+        model = joblib.load(MODEL_FILE)
+    else:
+        model = train_predictive_model()
+
+    while True:
+        # Fetch market data
+        market_data = await fetch_market_data(exchange, params)
+
+        for pair in params:
+            current_price = market_data[pair]["close"][-1]
+            current_volume = market_data[pair]["volume"][-1]
+
+            # Calculer la volatilité
+            volatility = calculate_volatility(market_data[pair]["close"])[-1]
+
+            # Prédiction avec le modèle de machine learning
+            predicted_side = predict_trade_action(model, current_price, current_volume, volatility)
+
+            usdt_balance = await exchange.get_balance()
+
+            # Place order based on the prediction
+            if predicted_side == 1:
+                await place_dynamic_order_with_risk_management(
+                    exchange=exchange,
+                    pair=pair,
+                    side="buy",
+                    price=current_price,
+                    usdt_balance=usdt_balance.free,
+                    base_size=params[pair]["size"] * usdt_balance.free / len(params[pair]["envelopes"]),
+                    volatility=volatility
                 )
-                for pair in pairs
-            ]
-            await asyncio.gather(*tasks)  # set leverage and margin mode for all pairs
-        except Exception as e:
-            print(e)
-
-        print(f"Getting data and indicators on {len(pairs)} pairs...")
-        tasks = [exchange.get_last_ohlcv(pair, tf, 50) for pair in pairs]
-        dfs = await asyncio.gather(*tasks)
-        df_list = dict(zip(pairs, dfs))
-
-        for pair in df_list:
-            current_params = params[pair]
-            df = df_list[pair]
-            if current_params["src"] == "close":
-                src = df["close"]
-            elif current_params["src"] == "ohlc4":
-                src = (df["close"] + df["high"] + df["low"] + df["open"]) / 4
-
-            df["ma_base"] = ta.trend.sma_indicator(
-                close=src, window=current_params["ma_base_window"]
-            )
-            high_envelopes = [
-                round(1 / (1 - e) - 1, 3) for e in current_params["envelopes"]
-            ]
-            for i in range(1, len(current_params["envelopes"]) + 1):
-                df[f"ma_high_{i}"] = df["ma_base"] * (1 + high_envelopes[i - 1])
-                df[f"ma_low_{i}"] = df["ma_base"] * (
-                    1 - current_params["envelopes"][i - 1]
-                )
-
-            df_list[pair] = df
-
-        usdt_balance = await exchange.get_balance()
-        usdt_balance = usdt_balance.total
-        print(f"Balance: {round(usdt_balance, 2)} USDT")
-
-        tasks = [exchange.get_open_trigger_orders(pair) for pair in pairs]
-        print(f"Getting open trigger orders...")
-        trigger_orders = await asyncio.gather(*tasks)
-        trigger_order_list = dict(
-            zip(pairs, trigger_orders)
-        )  # Get all open trigger orders by pair
-
-        tasks = []
-        for pair in df_list:
-            params[pair]["canceled_orders_buy"] = len(
-                [
-                    order
-                    for order in trigger_order_list[pair]
-                    if (order.side == "buy" and order.reduce is False)
-                ]
-            )
-            params[pair]["canceled_orders_sell"] = len(
-                [
-                    order
-                    for order in trigger_order_list[pair]
-                    if (order.side == "sell" and order.reduce is False)
-                ]
-            )
-            tasks.append(
-                exchange.cancel_trigger_orders(
-                    pair, [order.id for order in trigger_order_list[pair]]
-                )
-            )
-        print(f"Canceling trigger orders...")
-        await asyncio.gather(*tasks)  # Cancel all trigger orders
-
-        tasks = [exchange.get_open_orders(pair) for pair in pairs]
-        print(f"Getting open orders...")
-        orders = await asyncio.gather(*tasks)
-        order_list = dict(zip(pairs, orders))  # Get all open orders by pair
-
-        tasks = []
-        for pair in df_list:
-            params[pair]["canceled_orders_buy"] = params[pair][
-                "canceled_orders_buy"
-            ] + len(
-                [
-                    order
-                    for order in order_list[pair]
-                    if (order.side == "buy" and order.reduce is False)
-                ]
-            )
-            params[pair]["canceled_orders_sell"] = params[pair][
-                "canceled_orders_sell"
-            ] + len(
-                [
-                    order
-                    for order in order_list[pair]
-                    if (order.side == "sell" and order.reduce is False)
-                ]
-            )
-            tasks.append(
-                exchange.cancel_orders(pair, [order.id for order in order_list[pair]])
-            )
-
-        print(f"Canceling limit orders...")
-        await asyncio.gather(*tasks)  # Cancel all orders
-
-        print(f"Getting live positions...")
-        positions = await exchange.get_open_positions(pairs)
-        tasks_close = []
-        tasks_open = []
-        for position in positions:
-            print(
-                f"Current position on {position.pair} {position.side} - {position.size} ~ {position.usd_size} $"
-            )
-            row = df_list[position.pair].iloc[-2]
-            tasks_close.append(
-                exchange.place_order(
-                    pair=position.pair,
-                    side=invert_side[position.side],
-                    price=row["ma_base"],
-                    size=exchange.amount_to_precision(position.pair, position.size),
-                    type="limit",
-                    reduce=True,
-                    margin_mode=margin_mode,
-                    error=False,
-                )
-            )
-            if position.side == "long":
-                sl_side = "sell"
-                sl_price = exchange.price_to_precision(
-                    position.pair, position.entry_price * (1 - sl)
-                )
-            elif position.side == "short":
-                sl_side = "buy"
-                sl_price = exchange.price_to_precision(
-                    position.pair, position.entry_price * (1 + sl)
-                )
-            tasks_close.append(
-                exchange.place_trigger_order(
-                    pair=position.pair,
-                    side=sl_side,
-                    trigger_price=sl_price,
-                    price=None,
-                    size=exchange.amount_to_precision(position.pair, position.size),
-                    type="market",
-                    reduce=True,
-                    margin_mode=margin_mode,
-                    error=False,
-                )
-            )
-            for i in range(
-                len(params[position.pair]["envelopes"])
-                - params[position.pair]["canceled_orders_buy"],
-                len(params[position.pair]["envelopes"]),
-            ):
-                tasks_open.append(
-                    exchange.place_trigger_order(
-                        pair=position.pair,
-                        side="buy",
-                        price=exchange.price_to_precision(
-                            position.pair, row[f"ma_low_{i+1}"]
-                        ),
-                        trigger_price=exchange.price_to_precision(
-                            position.pair, row[f"ma_low_{i+1}"] * 1.005
-                        ),
-                        size=exchange.amount_to_precision(
-                            position.pair,
-                            (
-                                (params[position.pair]["size"] * usdt_balance)
-                                / len(params[position.pair]["envelopes"])
-                                * size_leverage
-                            )
-                            / row[f"ma_low_{i+1}"],
-                        ),
-                        type="limit",
-                        reduce=False,
-                        margin_mode=margin_mode,
-                        error=False,
-                    )
-                )
-            for i in range(
-                len(params[position.pair]["envelopes"])
-                - params[position.pair]["canceled_orders_sell"],
-                len(params[position.pair]["envelopes"]),
-            ):
-                tasks_open.append(
-                    exchange.place_trigger_order(
-                        pair=position.pair,
-                        side="sell",
-                        trigger_price=exchange.price_to_precision(
-                            position.pair, row[f"ma_high_{i+1}"] * 0.995
-                        ),
-                        price=exchange.price_to_precision(
-                            position.pair, row[f"ma_high_{i+1}"]
-                        ),
-                        size=exchange.amount_to_precision(
-                            position.pair,
-                            (
-                                (params[position.pair]["size"] * usdt_balance)
-                                / len(params[position.pair]["envelopes"])
-                                * size_leverage
-                            )
-                            / row[f"ma_high_{i+1}"],
-                        ),
-                        type="limit",
-                        reduce=False,
-                        margin_mode=margin_mode,
-                        error=False,
-                    )
+            else:
+                await place_dynamic_order_with_risk_management(
+                    exchange=exchange,
+                    pair=pair,
+                    side="sell",
+                    price=current_price,
+                    usdt_balance=usdt_balance.free,
+                    base_size=params[pair]["size"] * usdt_balance.free / len(params[pair]["envelopes"]),
+                    volatility=volatility
                 )
 
-        print(f"Placing {len(tasks_close)} close SL / limit order...")
-        await asyncio.gather(*tasks_close)  # Limit orders when in positions
+            # Enregistrer les données de marché
+            trade_data = pd.DataFrame({
+                'timestamp': [datetime.now()],
+                'price': [current_price],
+                'volume': [current_volume],
+                'side': [predicted_side]
+            })
+            save_trade_data(trade_data)
 
-        pairs_not_in_position = [
-            pair
-            for pair in pairs
-            if pair not in [position.pair for position in positions]
-        ]
-        for pair in pairs_not_in_position:
-            row = df_list[pair].iloc[-2]
-            for i in range(len(params[pair]["envelopes"])):
-                if "long" in params[pair]["sides"]:
-                    tasks_open.append(
-                        exchange.place_trigger_order(
-                            pair=pair,
-                            side="buy",
-                            price=exchange.price_to_precision(
-                                pair, row[f"ma_low_{i+1}"]
-                            ),
-                            trigger_price=exchange.price_to_precision(
-                                pair, row[f"ma_low_{i+1}"] * 1.005
-                            ),
-                            size=exchange.amount_to_precision(
-                                pair,
-                                (
-                                    (params[pair]["size"] * usdt_balance)
-                                    / len(params[pair]["envelopes"])
-                                    * size_leverage
-                                )
-                                / row[f"ma_low_{i+1}"],
-                            ),
-                            type="limit",
-                            reduce=False,
-                            margin_mode=margin_mode,
-                            error=False,
-                        )
-                    )
-                if "short" in params[pair]["sides"]:
-                    tasks_open.append(
-                        exchange.place_trigger_order(
-                            pair=pair,
-                            side="sell",
-                            trigger_price=exchange.price_to_precision(
-                                pair, row[f"ma_high_{i+1}"] * 0.995
-                            ),
-                            price=exchange.price_to_precision(
-                                pair, row[f"ma_high_{i+1}"]
-                            ),
-                            size=exchange.amount_to_precision(
-                                pair,
-                                (
-                                    (params[pair]["size"] * usdt_balance)
-                                    / len(params[pair]["envelopes"])
-                                    * size_leverage
-                                )
-                                / row[f"ma_high_{i+1}"],
-                            ),
-                            type="limit",
-                            reduce=False,
-                            margin_mode=margin_mode,
-                            error=False,
-                        )
-                    )
+        # Sleep for a while before checking the market again
+        await asyncio.sleep(60)
 
-        print(f"Placing {len(tasks_open)} open limit order...")
-        await asyncio.gather(*tasks_open)  # Limit orders when not in positions
+# Fonction pour récupérer les données de marché depuis BitGet
+async def fetch_market_data(exchange, params):
+    market_data = {}
+    for pair in params:
+        df = await exchange.get_last_ohlcv(pair, timeframe='1m', limit=100)
+        market_data[pair] = df
+    return market_data
 
-        await exchange.close()
-        print(
-            f"--- Execution finished at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---"
-        )
-    except Exception as e:
-        await exchange.close()
-        raise e
+# Exemple de paramètres de trading
+params = {
+    'BTC/USDT': {
+        'size': 0.1,
+        'envelopes': [0.01, 0.02, 0.03],
+        'canceled_orders_sell': 0
+    },
+    # Ajouter d'autres paires de trading ici
+}
 
-
+# Point d'entrée principal
 if __name__ == "__main__":
-    asyncio.run(main())
+    exchange = PerpBitget()
+    asyncio.run(main_trading_logic(exchange, params))
