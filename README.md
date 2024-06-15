@@ -2,6 +2,6 @@
 
 ## Set up
 
-> clone git https://github.com/CryptoRobotFr/Live-Tools-V2.git
+> git clone https://github.com/Harpness/HARPE.git
 
 > bash Live-Tools-V2/install.sh
