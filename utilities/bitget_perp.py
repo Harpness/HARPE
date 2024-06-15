@@ -5,6 +5,7 @@ import pandas as pd
 import time
 import itertools
 from pydantic import BaseModel
+import secret  # Importation du fichier secret.py
 
 
 class UsdtBalance(BaseModel):
@@ -61,18 +62,19 @@ class Position(BaseModel):
 
 
 class PerpBitget:
-    def __init__(self, public_api=None, secret_api=None, password=None):
+    def __init__(self, account_name="bitget1"):
+        account = secret.ACCOUNTS[account_name]
         bitget_auth_object = {
-            "apiKey": public_api,
-            "secret": secret_api,
-            "password": password,
+            "apiKey": account["public_api"],
+            "secret": account["secret_api"],
+            "password": account["password"],
             "enableRateLimit": True,
             "rateLimit": 100,
             "options": {
                 "defaultType": "future",
             },
         }
-        if bitget_auth_object["secret"] == None:
+        if bitget_auth_object["secret"] is None:
             self._auth = False
             self._session = ccxt.bitget()
         else:
@@ -95,7 +97,7 @@ class PerpBitget:
         pair = self.ext_pair_to_pair(ext_pair)
         if pair in self.market:
             return self.market[pair]
-        else: 
+        else:
             return None
 
     def amount_to_precision(self, pair: str, amount: float) -> float:
@@ -305,14 +307,14 @@ class PerpBitget:
             pair = self.ext_pair_to_pair(pair)
             trade_side = "Open" if reduce is False else "Close"
             margin_mode = "cross" if margin_mode == "crossed" else "isolated"
-            trigger_order = await self._session.create_trigger_order(
+            trigger_order = await self._session.create_order(
                 symbol=pair,
                 type=type,
                 side=side,
                 amount=size,
                 price=price,
-                triggerPrice=trigger_price,
                 params={
+                    "triggerPrice": trigger_price,
                     "reduceOnly": reduce,
                     "tradeSide": trade_side,
                     "marginMode": margin_mode,
@@ -325,7 +327,7 @@ class PerpBitget:
             if error:
                 raise e
             else:
-                return None
+                return Info(success=False, message=str(e))
 
     async def get_open_orders(self, pair) -> List[Order]:
         pair = self.ext_pair_to_pair(pair)
@@ -351,7 +353,6 @@ class PerpBitget:
     async def get_open_trigger_orders(self, pair) -> List[TriggerOrder]:
         pair = self.ext_pair_to_pair(pair)
         resp = await self._session.fetch_open_orders(pair, params={"stop": True})
-        # print(resp)
         return_orders = []
         for order in resp:
             reduce = True if order["info"]["tradeSide"] == "close" else False
