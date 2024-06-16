@@ -1,206 +1,144 @@
+import datetime
+import sys
 import asyncio
-import pandas as pd
-import numpy as np
-import os
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
 import joblib
-import logging
-from datetime import datetime
-from bitget_perp import PerpBitget
+import os
+from sklearn.ensemble import RandomForestClassifier
+import pandas as pd
+import ta
+from utilities.bitget_perp import PerpBitget
+from secret import ACCOUNTS
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+sys.path.append("./Live-Tools-V2")
 
-# Chemin des fichiers
-DATA_FILE = "trade_data.csv"
-MODEL_FILE = "trading_model.pkl"
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-# Fonction pour enregistrer les données de trading
-def save_trade_data(trade_data, filename=DATA_FILE):
-    if os.path.exists(filename):
-        existing_data = pd.read_csv(filename)
-        updated_data = pd.concat([existing_data, trade_data])
+# Chemin pour sauvegarder les données historiques et le modèle
+historical_data_path = "./historical_data.pkl"
+model_path = "./model.pkl"
+
+def save_historical_data(data):
+    with open(historical_data_path, 'wb') as f:
+        pd.to_pickle(data, f)
+
+def load_historical_data():
+    if os.path.exists(historical_data_path):
+        with open(historical_data_path, 'rb') as f:
+            return pd.read_pickle(f)
     else:
-        updated_data = trade_data
+        # Créer un fichier vide s'il n'existe pas
+        empty_data = {}
+        save_historical_data(empty_data)
+        return empty_data
 
-    updated_data.to_csv(filename, index=False)
+def combine_data(old_data, new_data):
+    combined_data = {}
+    for pair in new_data:
+        if pair in old_data:
+            combined_data[pair] = pd.concat([old_data[pair], new_data[pair]]).drop_duplicates().reset_index(drop=True)
+        else:
+            combined_data[pair] = new_data[pair]
+    return combined_data
 
-# Fonction pour calculer la volatilité
-def calculate_volatility(prices, window=20):
-    log_returns = np.log(prices / prices.shift(1))
-    volatility = log_returns.rolling(window=window).std()
-    return volatility
-
-# Fonction pour ajuster la taille des positions
-def adjust_position_size(base_size, volatility, target_volatility=0.02):
-    if volatility > 0:
-        return base_size * (target_volatility / volatility)
+def load_model():
+    if os.path.exists(model_path):
+        return joblib.load(model_path)
     else:
-        return base_size
+        return RandomForestClassifier()
 
-# Fonction pour placer des ordres avec gestion des risques
-async def place_dynamic_order_with_risk_management(exchange, pair, side, price, usdt_balance, base_size, volatility, stop_loss_pct=0.02, take_profit_pct=0.04):
-    size = adjust_position_size(base_size, volatility)
-    size = exchange.amount_to_precision(pair, size / price)
+def save_model(model):
+    joblib.dump(model, model_path)
 
-    # Place main order
-    main_order = await exchange.place_trigger_order(
-        pair=pair,
-        side=side,
-        price=exchange.price_to_precision(pair, price),
-        trigger_price=exchange.price_to_precision(pair, price * (1.005 if side == "buy" else 0.995)),
-        size=size,
-        type="limit",
-        reduce=False,
-        margin_mode="cross"
-    )
+def train_model(data, labels):
+    model = load_model()
+    model.fit(data, labels)
+    save_model(model)
 
-    # Calculate stop-loss and take-profit prices
-    stop_loss_price = price * (1 - stop_loss_pct) if side == "buy" else price * (1 + stop_loss_pct)
-    take_profit_price = price * (1 + take_profit_pct) if side == "buy" else price * (1 - take_profit_pct)
+def predict(data):
+    model = load_model()
+    return model.predict(data)
 
-    # Place stop-loss order
-    await exchange.place_trigger_order(
-        pair=pair,
-        side="sell" if side == "buy" else "buy",
-        price=exchange.price_to_precision(pair, stop_loss_price),
-        trigger_price=exchange.price_to_precision(pair, stop_loss_price),
-        size=size,
-        type="limit",
-        reduce=True,
-        margin_mode="cross"
-    )
+async def fetch_historical_data(perp_bitget, pair, timeframe, limit=100):
+    try:
+        ohlcv = await perp_bitget._session.fetch_ohlcv(pair, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except Exception as e:
+        print(f"Error fetching historical data for {pair}: {e}")
+        return None
 
-    # Place take-profit order
-    await exchange.place_trigger_order(
-        pair=pair,
-        side="sell" if side == "buy" else "buy",
-        price=exchange.price_to_precision(pair, take_profit_price),
-        trigger_price=exchange.price_to_precision(pair, take_profit_price),
-        size=size,
-        type="limit",
-        reduce=True,
-        margin_mode="cross"
-    )
+def apply_envelope_strategy(df, window, envelope_percent):
+    df['ma'] = df['close'].rolling(window=window).mean()
+    df['upper_envelope'] = df['ma'] * (1 + envelope_percent)
+    df['lower_envelope'] = df['ma'] * (1 - envelope_percent)
+    df.dropna(inplace=True)
+    return df
 
-# Fonction pour charger et former le modèle
-def train_predictive_model(filename=DATA_FILE):
-    # Charger les données enregistrées
-    data = pd.read_csv(filename)
+async def main():
+    account = ACCOUNTS["bitget1"]
 
-    # Calculer les caractéristiques
-    data['log_return'] = np.log(data['price'] / data['price'].shift(1))
-    data['volatility'] = data['log_return'].rolling(window=20).std()
+    margin_mode = "isolated"
+    exchange_leverage = 3
 
-    # Remplacer les valeurs manquantes
-    data = data.fillna(0)
+    tf = "1h"
+    size_leverage = 3
+    sl = 0.3
+    params = {
+        "BTC/USDT": {"src": "close", "ma_base_window": 7, "envelopes": [0.07, 0.1, 0.15], "size": 0.1, "sides": ["long", "short"]},
+        "ETH/USDT": {"src": "close", "ma_base_window": 5, "envelopes": [0.07, 0.1, 0.15], "size": 0.1, "sides": ["long", "short"]},
+    }
 
-    # Sélectionner les caractéristiques et la cible
-    features = ['price', 'volume', 'volatility']
-    target = 'side'  # Par exemple, 1 pour 'buy', 0 pour 'sell'
+    perp_bitget = PerpBitget(account["public_api"], account["secret_api"], account["password"])
+    await perp_bitget.load_markets()
 
-    X = data[features]
-    y = data[target]
+    # Charger les données historiques
+    historical_data = load_historical_data()
 
-    # Diviser les données en ensembles d'entraînement et de test
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    # Collecter les nouvelles données de marché
+    new_data = {}
+    for pair, settings in params.items():
+        df = await fetch_historical_data(perp_bitget, pair, tf)
+        if df is not None:
+            new_data[pair] = df
+        else:
+            new_data[pair] = pd.DataFrame()
 
-    # Former le modèle
-    model = RandomForestClassifier(n_estimators=100, random_state=42)
-    model.fit(X_train, y_train)
+    # Combiner les nouvelles données avec les données historiques
+    combined_data = combine_data(historical_data, new_data)
 
-    # Évaluer le modèle
-    accuracy = model.score(X_test, y_test)
-    logger.info(f"Accuracy: {accuracy}")
+    # Sauvegarder les données combinées
+    save_historical_data(combined_data)
 
-    # Sauvegarder le modèle
-    joblib.dump(model, MODEL_FILE)
-    return model
+    # Collecte des données et étiquettes pour l'entraînement du modèle
+    data, labels = [], []
+    for pair, settings in params.items():
+        df = combined_data[pair]
+        for envelope_percent in settings["envelopes"]:
+            df = apply_envelope_strategy(df, settings["ma_base_window"], envelope_percent)
+            for i in range(len(df) - 1):
+                features = df.iloc[i][['close', 'ma', 'upper_envelope', 'lower_envelope']].values
+                label = 1 if df.iloc[i + 1]['close'] > df.iloc[i]['close'] else 0
+                data.append(features)
+                labels.append(label)
 
-# Fonction pour prédire l'action de trading
-def predict_trade_action(model, price, volume, volatility):
-    new_data = np.array([[price, volume, volatility]])
-    predicted_side = model.predict(new_data)
-    return predicted_side
+    # Entraînement du modèle
+    train_model(data, labels)
 
-# Fonction principale de trading
-async def main_trading_logic(exchange, params):
-    # Vérifier si le modèle existe, sinon le former
-    if os.path.exists(MODEL_FILE):
-        model = joblib.load(MODEL_FILE)
-    else:
-        model = train_predictive_model()
+    # Prédictions et passage des ordres
+    for pair, settings in params.items():
+        df = combined_data[pair]
+        for envelope_percent in settings["envelopes"]:
+            df = apply_envelope_strategy(df, settings["ma_base_window"], envelope_percent)
+            if not df.empty:
+                features = df.iloc[-1][['close', 'ma', 'upper_envelope', 'lower_envelope']].values
+                prediction = predict([features])[0]
 
-    while True:
-        # Fetch market data
-        market_data = await fetch_market_data(exchange, params)
+                if prediction == 1:  # Acheter
+                    await perp_bitget.place_order(pair, 'buy', settings["size"])
+                else:  # Vendre
+                    await perp_bitget.place_order(pair, 'sell', settings["size"])
 
-        for pair in params:
-            current_price = market_data[pair]["close"][-1]
-            current_volume = market_data[pair]["volume"][-1]
-
-            # Calculer la volatilité
-            volatility = calculate_volatility(market_data[pair]["close"])[-1]
-
-            # Prédiction avec le modèle de machine learning
-            predicted_side = predict_trade_action(model, current_price, current_volume, volatility)
-
-            usdt_balance = await exchange.get_balance()
-
-            # Place order based on the prediction
-            if predicted_side == 1:
-                await place_dynamic_order_with_risk_management(
-                    exchange=exchange,
-                    pair=pair,
-                    side="buy",
-                    price=current_price,
-                    usdt_balance=usdt_balance.free,
-                    base_size=params[pair]["size"] * usdt_balance.free / len(params[pair]["envelopes"]),
-                    volatility=volatility
-                )
-            else:
-                await place_dynamic_order_with_risk_management(
-                    exchange=exchange,
-                    pair=pair,
-                    side="sell",
-                    price=current_price,
-                    usdt_balance=usdt_balance.free,
-                    base_size=params[pair]["size"] * usdt_balance.free / len(params[pair]["envelopes"]),
-                    volatility=volatility
-                )
-
-            # Enregistrer les données de marché
-            trade_data = pd.DataFrame({
-                'timestamp': [datetime.now()],
-                'price': [current_price],
-                'volume': [current_volume],
-                'side': [predicted_side]
-            })
-            save_trade_data(trade_data)
-
-        # Sleep for a while before checking the market again
-        await asyncio.sleep(60)
-
-# Fonction pour récupérer les données de marché depuis BitGet
-async def fetch_market_data(exchange, params):
-    market_data = {}
-    for pair in params:
-        df = await exchange.get_last_ohlcv(pair, timeframe='1m', limit=100)
-        market_data[pair] = df
-    return market_data
-
-# Exemple de paramètres de trading
-params = {
-    'BTC/USDT': {
-        'size': 0.1,
-        'envelopes': [0.01, 0.02, 0.03],
-        'canceled_orders_sell': 0
-    },
-    # Ajouter d'autres paires de trading ici
-}
-
-# Point d'entrée principal
 if __name__ == "__main__":
-    exchange = PerpBitget()
-    asyncio.run(main_trading_logic(exchange, params))
+    asyncio.run(main())
