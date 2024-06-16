@@ -19,11 +19,11 @@ python3 -m venv .venv
 # Activation de l'environnement virtuel
 source .venv/bin/activate
 
-# Installation des dépendances depuis requirements.txt
+# Installation des dépendances
 pip install -r requirements.txt
 
 # Ajout des packages nécessaires pour le script de trading
-pip install ta pandas scikit-learn joblib ccxt pydantic
+pip install ta pandas scikit-learn joblib
 
 # Configurer git pour ignorer les modifications de secret.py
 git update-index --assume-unchanged secret.py
